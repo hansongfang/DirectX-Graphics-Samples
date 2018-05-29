@@ -606,7 +606,11 @@ bool Traverse(
                     else // if it's a bottom level
                     {
                         MARK(8, 0);
-                        bool geomOpaque = true; // TODO: This should be looked up with the triangle data.
+
+                        PrimitiveMetaData triangleMetadata = BVHReadPrimitiveMetaData(
+                            currentBVH,
+                            thisNodeIndex);
+                        bool geomOpaque = true; // (triangleMetadata.GeometryFlags & D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE) == 1; // TODO: This should be looked up with the triangle data.
                         bool opaque = IsOpaque(geomOpaque, instanceFlags, RayFlags());
 #ifdef DISABLE_ANYHIT 
                         opaque = true;

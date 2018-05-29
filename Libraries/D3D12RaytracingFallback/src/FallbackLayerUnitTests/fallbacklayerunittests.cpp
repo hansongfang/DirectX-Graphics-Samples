@@ -2330,6 +2330,7 @@ void AllocateUAVBuffer(ID3D12Device &d3d12device, UINT64 bufferSize, ID3D12Resou
                         PrimitiveMetaData metadata;
                         metadata.GeometryContributionToHitGroupIndex = 0;
                         metadata.PrimitiveIndex = i;
+                        metadata.GeometryFlags = 0;
                         trianglesMetadata.push_back(metadata);
                     }
                 }
@@ -2766,6 +2767,78 @@ void AllocateUAVBuffer(ID3D12Device &d3d12device, UINT64 bufferSize, ID3D12Resou
             {
                 Assert::IsTrue(outputPrimitives[i].PrimitiveType == PROCEDURAL_PRIMITIVE_TYPE, L"Loaded AABB is not properly marked as Procedural Geometry");
                 Assert::IsTrue(memcmp(&outputPrimitives[i].aabb, &aabbs[i], sizeof(aabbs[i])) == 0, L"Loaded AABB does not match the input AABB");
+            }
+        }
+
+        TEST_METHOD(LoadTriangles)
+        {
+            ID3D12Device &d3d12Device = m_d3d12Context.GetDevice();
+            LoadPrimitivesPass loadPrimitivesPass(&d3d12Device, 1);
+
+            CComPtr<ID3D12GraphicsCommandList> pCommandList;
+            m_d3d12Context.GetGraphicsCommandList(&pCommandList);
+
+            std::vector<Triangle> triangles;
+            triangles.push_back({ -2.0f,  1.0f, -2.0f,  1.0f,  1.0f, -2.0f,  1.0f,  1.0f,  1.0f });
+            triangles.push_back({ -2.0f,  1.0f,  1.0f, -2.0f, -2.0f, -2.0f,  1.0f, -2.0f, -2.0f });
+            triangles.push_back({  1.0f, -2.0f,  1.0f, -2.0f, -2.0f,  1.0f, -2.0f, -2.0f,  1.0f });
+            triangles.push_back({ -2.0f, -2.0f, -2.0f, -2.0f,  1.0f, -2.0f, -2.0f,  1.0f,  1.0f });
+            triangles.push_back({  1.0f, -2.0f,  1.0f,  1.0f, -2.0f, -2.0f,  1.0f,  1.0f, -2.0f });
+            triangles.push_back({  1.0f,  1.0f,  1.0f, -2.0f, -2.0f, -2.0f,  1.0f, -2.0f, -2.0f });
+            triangles.push_back({  1.0f,  1.0f, -2.0f, -2.0f,  1.0f, -2.0f, -2.0f, -2.0f,  1.0f });
+            triangles.push_back({  1.0f, -2.0f,  1.0f,  1.0f,  1.0f,  1.0f, -2.0f,  1.0f,  1.0f });
+             
+            CComPtr<ID3D12Resource> pInputTriangleBuffer;
+            m_d3d12Context.CreateResourceWithInitialData(triangles.data(), triangles.size() * sizeof(Triangle), &pInputTriangleBuffer);
+
+            CComPtr<ID3D12Resource> pOutputBuffer, pOutputMetadataBuffer;
+
+            D3D12_HEAP_PROPERTIES defaultHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            
+            auto outputBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(triangles.size() * sizeof(Primitive), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            AssertSucceeded(d3d12Device.CreateCommittedResource(&defaultHeapProperties, D3D12_HEAP_FLAG_NONE, &outputBufferDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&pOutputBuffer)));
+            
+            auto outputMetadataBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(triangles.size() * sizeof(PrimitiveMetaData), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+            AssertSucceeded(d3d12Device.CreateCommittedResource(&defaultHeapProperties, D3D12_HEAP_FLAG_NONE, &outputMetadataBufferDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&pOutputMetadataBuffer)));
+
+
+            D3D12_RAYTRACING_GEOMETRY_DESC geometryDesc = {};
+            geometryDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+            geometryDesc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+            geometryDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+            geometryDesc.Triangles.VertexCount = triangles.size() * 3;
+            geometryDesc.Triangles.VertexBuffer.StartAddress = pInputTriangleBuffer->GetGPUVirtualAddress();
+            geometryDesc.Triangles.VertexBuffer.StrideInBytes = sizeof(float3);
+            geometryDesc.Triangles.IndexFormat = DXGI_FORMAT_UNKNOWN;
+            geometryDesc.Triangles.IndexBuffer = 0;
+            
+            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
+            buildDesc.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+            buildDesc.pGeometryDescs = &geometryDesc;
+            buildDesc.NumDescs = 1;
+            buildDesc.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+
+            loadPrimitivesPass.LoadPrimitives(
+                pCommandList,
+                buildDesc,
+                (UINT)triangles.size(),
+                pOutputBuffer->GetGPUVirtualAddress(),
+                pOutputMetadataBuffer->GetGPUVirtualAddress());
+
+            pCommandList->Close();
+            m_d3d12Context.ExecuteCommandList(pCommandList);
+
+            std::vector<Primitive> outputPrimitives(triangles.size());
+            m_d3d12Context.ReadbackResource(pOutputBuffer, outputPrimitives.data(), (UINT)outputPrimitives.size() * sizeof(*outputPrimitives.data()));
+
+            std::vector<PrimitiveMetaData> outputMetadata(triangles.size());
+            m_d3d12Context.ReadbackResource(pOutputMetadataBuffer, outputMetadata.data(), (UINT)outputMetadata.size() * sizeof(*outputMetadata.data()));
+
+            for (UINT i = 0; i < triangles.size(); i++)
+            {
+                Assert::IsTrue(outputPrimitives[i].PrimitiveType == TRIANGLE_TYPE, L"Loaded triangle is not properly marked as Triangle Geometry");
+                Assert::IsTrue(memcmp(&outputPrimitives[i].triangle, &triangles[i], sizeof(triangles[i])) == 0, L"Loaded triangle does not match the input triangle");
+                Assert::IsTrue(outputMetadata[i].GeometryFlags & D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE == 1, L"Loaded triangle does not have opaque geometry flag set");
             }
         }
 
